@@ -17,6 +17,7 @@ services:
   opennms:
     image: opennms/horizon:latest
     container_name: opennms
+    command: ["-s"]
     environment:
       TZ: Europe/London
       POSTGRES_HOST: db

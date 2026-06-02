@@ -6,7 +6,8 @@ CONTAINER_NAME=$(curl -s --unix-socket /var/run/docker.sock \
   "http://localhost/containers/${SELF}/json" | \
   grep -o '"Name":"[^"]*"' | head -1 | cut -d'"' -f4)
 INDEX=$(echo "$CONTAINER_NAME" | awk -F'-' '{print $NF}')
-INDEX=${INDEX:-1}
+# Default to 1 if INDEX is not a positive integer (e.g. container name has no numeric suffix)
+echo "$INDEX" | grep -qE '^[0-9]+$' || INDEX=1
 START=$(( (INDEX - 1) * 15 + 1 ))
 
 while true; do
