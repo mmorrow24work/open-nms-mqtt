@@ -31,9 +31,10 @@ MQTT_TOPIC             = os.environ.get('MQTT_TOPIC',             'lab/#')
 AUTH = HTTPBasicAuth(OPENNMS_USER, OPENNMS_PASSWORD)
 BASE = f'{OPENNMS_URL}/opennms/rest'
 
-location_cache = {}
-provisioned    = set()
-node_id_cache  = {}
+location_cache     = {}
+provisioned        = set()
+location_confirmed = set()  # sites whose lat/lon has been updated after initial provisioning
+node_id_cache      = {}
 
 
 # ── OpenNMS REST helpers ──────────────────────────────────────────────────────
@@ -158,19 +159,23 @@ def provision_site(site):
 
     log.info(f'=== Provisioning {site} ===')
     try:
-        lat, lon = '0', '0'
-        if site in location_cache:
-            try:
-                lat, lon = location_cache[site].split(',')
-            except ValueError:
-                pass
-
+        lat, lon = location_cache[site].split(',')
         create_node(site, lat.strip(), lon.strip())
         sync_requisition()
         provisioned.add(site)
         log.info(f'=== {site} provisioned OK ===')
     except Exception as e:
         log.error(f'Failed to provision {site}: {e}')
+
+
+def update_node_location(site):
+    try:
+        lat, lon = location_cache[site].split(',')
+        create_node(site, lat.strip(), lon.strip())
+        onms_put(f'/requisitions/{OPENNMS_FOREIGN_SOURCE}/import?rescanExisting=true')
+        log.info(f'  Updated location for {site}: ({lat.strip()}, {lon.strip()})')
+    except Exception as e:
+        log.debug(f'update_node_location({site}) failed: {e}')
 
 
 # ── MQTT callbacks ────────────────────────────────────────────────────────────
@@ -191,10 +196,12 @@ def on_message(client, userdata, msg):
 
     if metric == 'location':
         location_cache[site] = msg.payload.decode()
-
-    if site not in provisioned:
-        provision_site(site)
-    elif metric in ('temp', 'humidity', 'power'):
+        if site not in provisioned:
+            provision_site(site)
+        elif site not in location_confirmed:
+            update_node_location(site)
+            location_confirmed.add(site)
+    elif site in provisioned and metric in ('temp', 'humidity', 'power'):
         send_event(site, metric, msg.payload.decode())
 
 
@@ -221,7 +228,8 @@ def startup_sync():
     ensure_foreign_source()
 
     try:
-        r = onms_get(f'/requisitions/{OPENNMS_FOREIGN_SOURCE}')
+        r = onms_get(f'/requisitions/{OPENNMS_FOREIGN_SOURCE}',
+                     headers={'Accept': 'application/json'})
         nodes = r.json().get('node', [])
         if isinstance(nodes, dict):
             nodes = [nodes]
@@ -229,6 +237,7 @@ def startup_sync():
             fid = n.get('foreignId', '')
             if fid.startswith('site'):
                 provisioned.add(fid)
+                location_confirmed.add(fid)
                 log.info(f'  Already provisioned: {fid}')
     except Exception as e:
         log.error(f'Startup sync failed: {e}')
